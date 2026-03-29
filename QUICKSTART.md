@@ -39,8 +39,6 @@ uname                   # System info
 uptime                  # How long running
 df                      # Free memory
 
-ls                      # List files
-cd bin                  # Go to /bin
 ls                      # See commands
 
 mkdir mydir             # Create directory
