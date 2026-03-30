@@ -136,8 +136,8 @@ BSD 3-Clause License - See LICENSE file for details
 
 ## Author
 
-**Paweł Ryszkowski** ([Arc1011](https://github.com/Arc1011))  
-Created in 2026 as an educational project to demonstrate OS concepts on microcontrollers.
+**Arc1011** ([Arc1011](https://github.com/Arc1011))  
+Created in 2026.
 
 ## Contributing
 
