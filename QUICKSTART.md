@@ -105,7 +105,6 @@ After startup:
 │   └── pin4
 ├── home/              (user files)
 ```
-disclamer: dev/ have empty files , its only to feel it "unix"
 ## LED Wiring (Optional)
 
 ```
