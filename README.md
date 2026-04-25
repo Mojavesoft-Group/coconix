@@ -128,8 +128,6 @@ gpio vixa 10
 
 - [ ] EEPROM persistence
 - [ ] PWM/analog control
-- [ ] SD card support
-- [ ] File size display
 
 ## License
 
