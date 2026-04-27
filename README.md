@@ -128,6 +128,7 @@ gpio vixa 10
 
 - [ ] EEPROM persistence
 - [ ] PWM/analog control
+- [ ] i2c (from issue)
 
 ## License
 
