@@ -38,6 +38,7 @@
 - [ ] eeprom
 - [ ] i2c
 - [ ] pwm
+- [ ] date cmd
 
 # LICENSE
 
