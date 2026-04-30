@@ -2,17 +2,17 @@
 #include <string.h>
 #include <avr/pgmspace.h>
 
-
-// Change these to reflect your hardware configuration! If the given feature was enabled here but isn't supported for the hardware configuration in use, it will be disabled at build-time.
+// Change these to reflect your hardware configuration! If a feature was enabled here but isn't supported for the hardware configuration in use, it will be disabled at build-time.
 #define NO_MEMORY_CHECK 0      // Disable checking the amount of free memory available.
 #define NO_SOFT_RESET 0        // Disable software resets.
 #define NO_TONE_FUNC 0         // Disable piezo support.
 #define NO_EEPROM 0            // Disable all access and usage of the EEPROM storage.
 #define HW_NAME "Arduino UNO"  // The name of the board running Coconix.
+#define BAUD_RATE 115200       // On some boards, this may need to be reconfigured to prevent garbling in the Serial Monitor.
 
-#if not defined(ADAFRUIT_METRO_M0_EXPRESS) && not defined(ARDUINO_SAM_DUE) && NO_EEPROM == 0  // EEPROM is allowed and not using Adafruit Metro M0 Express board.
+#if not defined(ADAFRUIT_METRO_M0_EXPRESS) && not defined(ARDUINO_SAM_DUE) && not defined(ARDUINO_GIGA) && NO_EEPROM == 0  // EEPROM is allowed and not using Adafruit Metro M0 Express board.
 #include <EEPROM.h>
-#elif defined(ADAFRUIT_METRO_M0_EXPRESS) || defined(ARDUINO_SAM_DUE)
+#elif defined(ADAFRUIT_METRO_M0_EXPRESS) || defined(ARDUINO_SAM_DUE) || defined(ARDUINO_GIGA)
 #undef NO_EEPROM
 #define NO_EEPROM 1  // EEPROM cannot be used on some boards.
 #endif
@@ -20,6 +20,11 @@
 #ifdef ARDUINO_SAM_DUE
 #undef NO_TONE_FUNC
 #define NO_TONE_FUNC 1  // *sigh* Arduino Due boards are the worst.
+#endif
+
+#ifdef ARDUINO_GIGA
+#undef NO_MEMORY_CHECK
+#define NO_MEMORY_CHECK 1
 #endif
 
 #define MAX_FILES 10
@@ -206,9 +211,8 @@ void printPrompt() {
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(BAUD_RATE);
   initFS();
-  delay(1000);
   Serial.println(F("\n--- Coconix v1.0 ---"));
   Serial.println(F("Type 'help' for commands"));
   printPrompt();
