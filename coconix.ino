@@ -9,6 +9,8 @@
 #define NO_EEPROM 0            // Disable all access and usage of the EEPROM storage.
 #define HW_NAME "Arduino UNO"  // The name of the board running Coconix.
 #define BAUD_RATE 115200       // On some boards, this may need to be reconfigured to prevent garbling in the Serial Monitor.
+#define VERSION_NUMBER "0.1"   // Version string for this version of Coconix.
+
 
 #if not defined(ADAFRUIT_METRO_M0_EXPRESS) && not defined(ARDUINO_SAM_DUE) && not defined(ARDUINO_GIGA) && NO_EEPROM == 0  // EEPROM is allowed and not using Adafruit Metro M0 Express board.
 #include <EEPROM.h>
@@ -213,7 +215,10 @@ void printPrompt() {
 void setup() {
   Serial.begin(BAUD_RATE);
   initFS();
-  Serial.println(F("\n--- Coconix v1.0 ---"));
+  delay(1000);
+  Serial.print(F("--- Coconix v"));
+  Serial.print(VERSION_NUMBER);
+  Serial.println(F(" ---"));
   Serial.println(F("Type 'help' for commands"));
   printPrompt();
 }
