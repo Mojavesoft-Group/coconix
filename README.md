@@ -6,11 +6,12 @@ In this table, _yes_ denotes a board on which Coconix can make use of its full f
 | Board    | Supported by Coconix? | Notes |
 | -------- | ------- | ------- |
 | Arduino UNO R3  | Yes    | N/A |
-| Arduino UNO R4 | Yes     | EEPROM is emulated in flash on R4 boards. |
-| Arduino Due    | Partially    | Coconix on the Arduino Due cannot operate piezo buzzers or save data to non-volatile storage. |
-| Adafruit Metro M0 Express    | Partially    | Coconix on the Adafruit Metro M0 Express cannot save data to non-volatile storage. |
+| Arduino UNO R4 | Yes     | EEPROM is emulated in flash on R4 boards.* |
+| Arduino Due    | Partially    | Coconix on the Arduino Due cannot operate piezo buzzers or save data to non-volatile storage.* |
+| Adafruit Metro M0 Express    | Partially    | Coconix on the Adafruit Metro M0 Express cannot save data to non-volatile storage.* |
 | ESP32 family    | No    | Coconix on ESP32-family microcontrollers is untested and most likely broken. |
 
+_*For more information on non-volatile storage support, read the FAQ at `EEPROM.md`._
 
 ## Commands
 - `uname`
