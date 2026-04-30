@@ -2,12 +2,52 @@
 #include <string.h>
 #include <avr/pgmspace.h>
 
-#define MAX_FILES 10         
-#define NAME_LEN 12         
-#define CONTENT_LEN 32      
-#define PATH_LEN 16         
+
+// Change these to reflect your hardware configuration! If the given feature was enabled here but isn't supported for the hardware configuration in use, it will be disabled at build-time.
+#define NO_MEMORY_CHECK 0      // Disable checking the amount of free memory available.
+#define NO_SOFT_RESET 0        // Disable software resets.
+#define NO_TONE_FUNC 0         // Disable piezo support.
+#define NO_EEPROM 0            // Disable all access and usage of the EEPROM storage.
+#define HW_NAME "Arduino UNO"  // The name of the board running Coconix.
+
+#if not defined(ADAFRUIT_METRO_M0_EXPRESS) && not defined(ARDUINO_SAM_DUE) && NO_EEPROM == 0  // EEPROM is allowed and not using Adafruit Metro M0 Express board.
+#include <EEPROM.h>
+#elif defined(ADAFRUIT_METRO_M0_EXPRESS) || defined(ARDUINO_SAM_DUE)
+#undef NO_EEPROM
+#define NO_EEPROM 1  // EEPROM cannot be used on some boards.
+#endif
+
+#ifdef ARDUINO_SAM_DUE
+#undef NO_TONE_FUNC
+#define NO_TONE_FUNC 1  // *sigh* Arduino Due boards are the worst.
+#endif
+
+#define MAX_FILES 10
+#define NAME_LEN 12
+#define CONTENT_LEN 32
+#define PATH_LEN 16
 #define DMESG_LINES 6
 #define DMESG_LEN 40
+#define EEPROM_MAGIC 0xAB
+#define EEPROM_ADDR 0
+
+#ifdef __arm__
+// should use uinstd.h to define sbrk but Due causes a conflict
+extern "C" char* sbrk(int incr);
+#else   // __ARM__
+extern char* __brkval;
+#endif  // __arm__
+
+#ifdef __arm__
+#define HW_ARCH "ARM"
+
+#elif defined(__AVR__)
+#define HW_ARCH "AVR"
+
+#else
+#define HW_ARCH "Unknown"
+
+#endif
 
 typedef struct {
   char name[NAME_LEN];
@@ -30,14 +70,44 @@ DmesgEntry dmesg[DMESG_LINES];
 int dmesgIndex = 0;
 
 int freeMemory() {
-  extern int __heap_start, *__brkval;
-  int v;
-  return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
+  char top;
+
+#if NO_MEMORY_CHECK == 1
+  return -1;
+#elif defined(__arm__)
+  return &top - reinterpret_cast<char*>(sbrk(0));
+#elif defined(CORE_TEENSY) || (ARDUINO > 103 && ARDUINO != 151)
+  return &top - __brkval;
+#else   // __arm__
+  return __brkval ? &top - __brkval : &top - __malloc_heap_start;
+#endif  // __arm__
 }
 
-void(* resetFunc) (void) = 0;
+bool is_argstr_empty(char* args) {
+  return strcmp("", args) == 0;
+}
 
-// OPT from issue
+#if defined(__AVR__) && NO_SOFT_RESET == 0
+void (*resetFunc)(void) = 0;
+
+#elif defined(__arm__) && NO_SOFT_RESET == 0
+void resetFunc() {
+  NVIC_SystemReset();
+}
+
+#elif NO_SOFT_RESET != 0
+void resetFunc() {
+  Serial.println(F("This build of Coconix has been configured to disable software resets."));
+}
+
+#else
+void resetFunc() {
+  Serial.println(F("Coconix doesn't support software resets on this hardware."));
+}
+
+#endif
+
+// OPT
 void addDmesg(const __FlashStringHelper* msg) {
   if (dmesgIndex >= DMESG_LINES) dmesgIndex = 0;
   dmesg[dmesgIndex].timestamp = millis() / 1000;
@@ -54,10 +124,44 @@ void addDmesgRam(const char* msg) {
   dmesgIndex++;
 }
 
-void initFS() {
-  int d, i;
+void saveFS() {
+#if NO_EEPROM == 1
+  Serial.println(F("Filesystem could not be synced because EEPROM writes are disabled."));
+#else
+  EEPROM.update(EEPROM_ADDR, EEPROM_MAGIC);
+  int addr = EEPROM_ADDR + 1;
+  for (int i = 0; i < MAX_FILES; i++) {
+    EEPROM.put(addr, fs[i]);
+    addr += sizeof(RAMFile);
+  }
+  Serial.println(F("Synced to EEPROM."));
+  addDmesg(F("FS saved to EEPROM"));
+#endif
+}
 
-  const char* dirs[] = {"home", "dev"};
+#if NO_EEPROM == 0
+void loadFS() {
+  if (EEPROM.read(EEPROM_ADDR) != EEPROM_MAGIC) return;
+  int addr = EEPROM_ADDR + 1;
+  for (int i = 0; i < MAX_FILES; i++) {
+    EEPROM.get(addr, fs[i]);
+    addr += sizeof(RAMFile);
+  }
+  addDmesg(F("FS loaded from EEPROM"));
+}
+#endif
+
+void initFS() {
+#if NO_EEPROM == 0
+  // If saved filesystem exists, load it instead of defaults
+  if (EEPROM.read(EEPROM_ADDR) == EEPROM_MAGIC) {
+    loadFS();
+    return;
+  }
+#endif
+
+  int d, i;
+  const char* dirs[] = { "home", "dev" };
   for (d = 0; d < 2; d++) {
     for (i = 0; i < MAX_FILES; i++) {
       if (!fs[i].active) {
@@ -73,7 +177,7 @@ void initFS() {
   }
 
   char devPath[PATH_LEN] = "/dev/";
-  const char* pins[] = {"pin2", "pin3", "pin4"};
+  const char* pins[] = { "pin2", "pin3", "pin4" };
   for (d = 0; d < 3; d++) {
     for (i = 0; i < MAX_FILES; i++) {
       if (!fs[i].active) {
@@ -89,7 +193,7 @@ void initFS() {
     }
   }
 
-  // OPT from isse
+  // OPT
   addDmesg(F("Kernel initialized"));
   addDmesg(F("Filesystem mounted"));
   addDmesg(F("Ready for commands"));
@@ -105,9 +209,36 @@ void setup() {
   Serial.begin(115200);
   initFS();
   delay(1000);
-  Serial.println(F("\n--- KernelUNO v1.0 ---"));
+  Serial.println(F("\n--- Coconix v1.0 ---"));
   Serial.println(F("Type 'help' for commands"));
   printPrompt();
+}
+
+void generate_tone(int pin, int freq) {
+#if NO_TONE_FUNC == 0
+  tone(pin, freq);
+#elif NO_TONE_FUNC == 1
+  Serial.println(F("This build of Coconix has been configured to disable piezo support."));
+#endif
+}
+
+void stop_tone(int pin) {
+#if NO_TONE_FUNC == 0
+  noTone(pin);
+#elif NO_TONE_FUNC == 1
+  Serial.println(F("This build of Coconix has been configured to disable piezo support."));
+#endif
+}
+
+void clear_eeprom() {
+#if NO_EEPROM == 0
+  for (int i = 0; i < EEPROM.length(); i++) {
+    Serial.println(String("Clearing byte #") + String(i));
+    EEPROM.update(i, 255);
+  }
+#else
+  Serial.println(F("Filesystem could not be cleared because EEPROM writes are disabled."));
+#endif
 }
 
 void loop() {
@@ -122,19 +253,17 @@ void loop() {
         memset(inputBuffer, 0, 32);
         printPrompt();
       } else {
-        
+
         Serial.println();
         printPrompt();
       }
-    }
-    else if (c == 8 || c == 127) {
+    } else if (c == 8 || c == 127) {
       if (inputLen > 0) {
         inputLen--;
         inputBuffer[inputLen] = '\0';
         Serial.print(F("\b \b"));
       }
-    }
-    else if (inputLen < 31) {
+    } else if (inputLen < 31) {
       Serial.print(c);
       inputBuffer[inputLen] = c;
       inputLen++;
@@ -147,7 +276,10 @@ int indexOf(const char* str, const char* substr) {
   for (i = 0; i <= slen - sublen; i++) {
     int match = 1;
     for (j = 0; j < sublen; j++) {
-      if (str[i + j] != substr[j]) { match = 0; break; }
+      if (str[i + j] != substr[j]) {
+        match = 0;
+        break;
+      }
     }
     if (match) return i;
   }
@@ -206,7 +338,10 @@ void executeCommand(char* line) {
   // OPT
   if (strcmp_P(cmd, PSTR("pinmode")) == 0) {
     sp = indexOf(args, " ");
-    if (sp == -1) { Serial.println(F("Usage: pinmode [pin] [in/out]")); return; }
+    if (sp == -1) {
+      Serial.println(F("Usage: pinmode [pin] [in/out]"));
+      return;
+    }
     pin = atoi_safe(args);
     char mode[8] = "";
     strncpy(mode, args + sp + 1, 7);
@@ -217,17 +352,18 @@ void executeCommand(char* line) {
       snprintf_P(buf, sizeof(buf), PSTR("Pin %d set to OUTPUT"), pin);
       addDmesgRam(buf);
       Serial.println(F("Pin set to OUTPUT"));
-    }
-    else if (strcmp_P(mode, PSTR("in")) == 0) {
+    } else if (strcmp_P(mode, PSTR("in")) == 0) {
       pinMode(pin, INPUT_PULLUP);
       snprintf_P(buf, sizeof(buf), PSTR("Pin %d set to INPUT"), pin);
       addDmesgRam(buf);
       Serial.println(F("Pin set to INPUT_PULLUP"));
     }
-  }
-  else if (strcmp_P(cmd, PSTR("write")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("write")) == 0) {
     sp = indexOf(args, " ");
-    if (sp == -1) { Serial.println(F("Usage: write [pin] [high/low]")); return; }
+    if (sp == -1) {
+      Serial.println(F("Usage: write [pin] [high/low]"));
+      return;
+    }
     pin = atoi_safe(args);
     char val[8] = "";
     strncpy(val, args + sp + 1, 7);
@@ -237,16 +373,16 @@ void executeCommand(char* line) {
     snprintf_P(buf, sizeof(buf), PSTR("Pin %d wrote %s"), pin, strcmp_P(val, PSTR("high")) == 0 ? "HIGH" : "LOW");
     addDmesgRam(buf);
     Serial.println(F("Write OK."));
-  }
-  else if (strcmp_P(cmd, PSTR("read")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("read")) == 0) {
     pin = atoi_safe(args);
     int value = digitalRead(pin);
-    Serial.print(F("Pin ")); Serial.print(pin);
-    Serial.print(F(" value: ")); Serial.println(value);
+    Serial.print(F("Pin "));
+    Serial.print(pin);
+    Serial.print(F(" value: "));
+    Serial.println(value);
     snprintf_P(buf, sizeof(buf), PSTR("Pin %d read: %d"), pin, value);
     addDmesgRam(buf);
-  }
-  else if (strcmp_P(cmd, PSTR("gpio")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("gpio")) == 0) {
     sp = indexOf(args, " ");
     if (sp == -1) {
       Serial.println(F("Usage: gpio [pin] [on/off] OR gpio vixa [count]"));
@@ -283,25 +419,28 @@ void executeCommand(char* line) {
         digitalWrite(pin, HIGH);
         snprintf_P(buf, sizeof(buf), PSTR("GPIO %d ON"), pin);
         addDmesgRam(buf);
-        Serial.print(F("GPIO ")); Serial.print(pin); Serial.println(F(" ON"));
-      }
-      else if (strcmp_P(action, PSTR("off")) == 0) {
+        Serial.print(F("GPIO "));
+        Serial.print(pin);
+        Serial.println(F(" ON"));
+      } else if (strcmp_P(action, PSTR("off")) == 0) {
         pinMode(pin, OUTPUT);
         digitalWrite(pin, LOW);
         snprintf_P(buf, sizeof(buf), PSTR("GPIO %d OFF"), pin);
         addDmesgRam(buf);
-        Serial.print(F("GPIO ")); Serial.print(pin); Serial.println(F(" OFF"));
-      }
-      else if (strcmp_P(action, PSTR("toggle")) == 0) {
+        Serial.print(F("GPIO "));
+        Serial.print(pin);
+        Serial.println(F(" OFF"));
+      } else if (strcmp_P(action, PSTR("toggle")) == 0) {
         pinMode(pin, OUTPUT);
         digitalWrite(pin, !digitalRead(pin));
         snprintf_P(buf, sizeof(buf), PSTR("GPIO %d toggled"), pin);
         addDmesgRam(buf);
-        Serial.print(F("GPIO ")); Serial.print(pin); Serial.println(F(" toggled"));
+        Serial.print(F("GPIO "));
+        Serial.print(pin);
+        Serial.println(F(" toggled"));
       }
     }
-  }
-  else if (strcmp_P(cmd, PSTR("ls")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("ls")) == 0) {
     int empty = 1, j;
     for (j = 0; j < MAX_FILES; j++) {
       if (fs[j].active && strcmp(fs[j].parentDir, currentPath) == 0) {
@@ -313,13 +452,18 @@ void executeCommand(char* line) {
     }
     if (empty) Serial.print(F("(empty)"));
     Serial.println();
-  }
-  else if (strcmp_P(cmd, PSTR("mkdir")) == 0 || strcmp_P(cmd, PSTR("touch")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("mkdir")) == 0 || strcmp_P(cmd, PSTR("touch")) == 0) {
     int foundSlot = -1, j;
     for (j = 0; j < MAX_FILES; j++) {
-      if (!fs[j].active) { foundSlot = j; break; }
+      if (!fs[j].active) {
+        foundSlot = j;
+        break;
+      }
     }
-    if (foundSlot == -1) { Serial.println(F("No space.")); return; }
+    if (foundSlot == -1) {
+      Serial.println(F("No space."));
+      return;
+    }
     strncpy(fs[foundSlot].name, args, NAME_LEN - 1);
     fs[foundSlot].name[NAME_LEN - 1] = '\0';
     strncpy(fs[foundSlot].parentDir, currentPath, PATH_LEN - 1);
@@ -328,17 +472,14 @@ void executeCommand(char* line) {
     fs[foundSlot].content[0] = '\0';
     fs[foundSlot].active = 1;
     Serial.println(F("OK."));
-  }
-  else if (strcmp_P(cmd, PSTR("cd")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("cd")) == 0) {
     if (strcmp_P(args, PSTR("..")) == 0 || strcmp_P(args, PSTR("/")) == 0) {
       strncpy(currentPath, "/", PATH_LEN - 1);
       currentPath[PATH_LEN - 1] = '\0';
     } else {
       int j, found = 0;
       for (j = 0; j < MAX_FILES; j++) {
-        if (fs[j].active && fs[j].isDirectory &&
-            strcmp(args, fs[j].name) == 0 &&
-            strcmp(fs[j].parentDir, currentPath) == 0) {
+        if (fs[j].active && fs[j].isDirectory && strcmp(args, fs[j].name) == 0 && strcmp(fs[j].parentDir, currentPath) == 0) {
           if (!safeConcatPath(currentPath, fs[j].name)) {
             strncpy(currentPath, "/", PATH_LEN - 1);
             currentPath[PATH_LEN - 1] = '\0';
@@ -351,11 +492,9 @@ void executeCommand(char* line) {
       }
       if (!found) Serial.println(F("No dir."));
     }
-  }
-  else if (strcmp_P(cmd, PSTR("pwd")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("pwd")) == 0) {
     Serial.println(currentPath);
-  }
-  else if (strcmp_P(cmd, PSTR("echo")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("echo")) == 0) {
     int arrow = indexOf(args, " > ");
     if (arrow != -1) {
       char text[40] = "";
@@ -366,9 +505,7 @@ void executeCommand(char* line) {
       filename[NAME_LEN - 1] = '\0';
       int j, found = 0;
       for (j = 0; j < MAX_FILES; j++) {
-        if (fs[j].active && !fs[j].isDirectory &&
-            strcmp(filename, fs[j].name) == 0 &&
-            strcmp(fs[j].parentDir, currentPath) == 0) {
+        if (fs[j].active && !fs[j].isDirectory && strcmp(filename, fs[j].name) == 0 && strcmp(fs[j].parentDir, currentPath) == 0) {
           strncpy(fs[j].content, text, CONTENT_LEN - 1);
           fs[j].content[CONTENT_LEN - 1] = '\0';
           Serial.println(F("Saved."));
@@ -389,34 +526,33 @@ void executeCommand(char* line) {
     } else {
       Serial.println(args);
     }
-  }
-  else if (strcmp_P(cmd, PSTR("cat")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("cat")) == 0) {
     int j, found = 0;
     for (j = 0; j < MAX_FILES; j++) {
-      if (fs[j].active && !fs[j].isDirectory &&
-          strcmp(args, fs[j].name) == 0 &&
-          strcmp(fs[j].parentDir, currentPath) == 0) {
+      if (fs[j].active && !fs[j].isDirectory && strcmp(args, fs[j].name) == 0 && strcmp(fs[j].parentDir, currentPath) == 0) {
         Serial.println(fs[j].content);
         found = 1;
         break;
       }
     }
     if (!found) Serial.println(F("File not found."));
-  }
-  else if (strcmp_P(cmd, PSTR("info")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("info")) == 0) {
     int j, found = 0;
     for (j = 0; j < MAX_FILES; j++) {
       if (fs[j].active && strcmp(args, fs[j].name) == 0 && strcmp(fs[j].parentDir, currentPath) == 0) {
-        Serial.print(F("Name: ")); Serial.println(fs[j].name);
-        Serial.print(F("Type: ")); Serial.println(fs[j].isDirectory ? F("Directory") : F("File"));
-        Serial.print(F("Size: ")); Serial.print(strlen(fs[j].content)); Serial.println(F(" bytes"));
+        Serial.print(F("Name: "));
+        Serial.println(fs[j].name);
+        Serial.print(F("Type: "));
+        Serial.println(fs[j].isDirectory ? F("Directory") : F("File"));
+        Serial.print(F("Size: "));
+        Serial.print(strlen(fs[j].content));
+        Serial.println(F(" bytes"));
         found = 1;
         break;
       }
     }
     if (!found) Serial.println(F("Not found."));
-  }
-  else if (strcmp_P(cmd, PSTR("rm")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("rm")) == 0) {
     int j, found = 0;
     for (j = 0; j < MAX_FILES; j++) {
       if (fs[j].active && strcmp(args, fs[j].name) == 0 && strcmp(fs[j].parentDir, currentPath) == 0) {
@@ -437,8 +573,7 @@ void executeCommand(char* line) {
       }
     }
     if (!found) Serial.println(F("Not found."));
-  }
-  else if (strcmp_P(cmd, PSTR("dmesg")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("dmesg")) == 0) {
     Serial.println(F("=== KERNEL MESSAGES ==="));
     int j;
     for (j = 0; j < DMESG_LINES; j++) {
@@ -449,56 +584,51 @@ void executeCommand(char* line) {
         Serial.println(dmesg[j].message);
       }
     }
-  }
-  else if (strcmp_P(cmd, PSTR("uptime")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("uptime")) == 0) {
     unsigned long s = millis() / 1000;
     unsigned long h = s / 3600;
     unsigned long m = (s % 3600) / 60;
     unsigned long sec = s % 60;
     Serial.print(F("up "));
-    Serial.print(h); Serial.print(F("h "));
-    Serial.print(m); Serial.print(F("m "));
-    Serial.print(sec); Serial.println(F("s"));
+    Serial.print(h);
+    Serial.print(F("h "));
+    Serial.print(m);
+    Serial.print(F("m "));
+    Serial.print(sec);
+    Serial.println(F("s"));
     addDmesg(F("uptime command"));
-  }
-  else if (strcmp_P(cmd, PSTR("df")) == 0 || strcmp_P(cmd, PSTR("free")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("df")) == 0 || strcmp_P(cmd, PSTR("free")) == 0) {
     Serial.print(F("Free RAM: "));
     Serial.print(freeMemory());
     Serial.println(F(" bytes"));
-  }
-  else if (strcmp_P(cmd, PSTR("whoami")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("whoami")) == 0) {
     Serial.println(F("root"));
-  }
-  else if (strcmp_P(cmd, PSTR("uname")) == 0) {
-    Serial.println(F("KernelUNO v1.0"));
-    Serial.print(F("Kernel: Arduino "));
-    Serial.println(F("AVR"));
+  } else if (strcmp_P(cmd, PSTR("uname")) == 0) {
+    Serial.println(F("Coconix v1.0"));
+    Serial.print(F("Architecture: "));
+    Serial.println(HW_ARCH);
     Serial.print(F("Hardware: "));
-    Serial.println(F("Arduino UNO"));
+    Serial.println(HW_NAME);
     Serial.print(F("RAM: "));
     Serial.print(freeMemory());
     Serial.println(F(" bytes free"));
-  }
-  else if (strcmp_P(cmd, PSTR("reboot")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("reboot")) == 0) {
     Serial.println(F("Rebooting..."));
     addDmesg(F("System reboot"));
+    saveFS();
     delay(500);
     resetFunc();
-  }
-  else if (strcmp_P(cmd, PSTR("clear")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("clear")) == 0) {
     int j;
     for (j = 0; j < 30; j++) Serial.println();
-  }
-  else if (strcmp_P(cmd, PSTR("sh")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("sh")) == 0) {
     if (args[0] == '\0') {
       Serial.println(F("Usage: sh [script]"));
       return;
     }
     int j, found = 0;
     for (j = 0; j < MAX_FILES; j++) {
-      if (fs[j].active && !fs[j].isDirectory &&
-          strcmp(args, fs[j].name) == 0 &&
-          strcmp(fs[j].parentDir, currentPath) == 0) {
+      if (fs[j].active && !fs[j].isDirectory && strcmp(args, fs[j].name) == 0 && strcmp(fs[j].parentDir, currentPath) == 0) {
         found = 1;
         addDmesg(F("sh: running script"));
         runScript(fs[j].content);
@@ -506,31 +636,86 @@ void executeCommand(char* line) {
       }
     }
     if (!found) Serial.println(F("Script not found."));
-  }
-  else if (strcmp_P(cmd, PSTR("pwm")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("help")) == 0) {
+    Serial.println(F("Commands: ls, cd, pwd, mkdir, touch, cat, echo, rm, info"));
+    Serial.println(F("          pinmode, write, read, gpio, sh"));
+    Serial.println(F("          uptime, uname, dmesg, df, free, whoami, clear, reboot, tone, notone, sleep"));
+    Serial.println(F("          sync, build-info"));
+    Serial.println(F("GPIO: gpio [pin] on/off/toggle  |  gpio vixa [count] | tone [pin] [freq] | notone [pin]"));
+    Serial.println(F("SH:   sh [file]  -- run script (use ; as line separator)"));
+
+  } else if (strcmp_P(cmd, PSTR("tone")) == 0) {
+    int pin, freq;
     sp = indexOf(args, " ");
-    if (sp == -1) { Serial.println(F("Usage: pwm [pin] [0-255]")); return; }
-    pin = atoi_safe(args);
-    char valStr[8] = "";
-    strncpy(valStr, args + sp + 1, 7);
-    valStr[7] = '\0';
-    int pwmVal = atoi_safe(valStr);
-    if (pwmVal < 0) pwmVal = 0;
-    if (pwmVal > 255) pwmVal = 255;
-    pinMode(pin, OUTPUT);
-    analogWrite(pin, pwmVal);
-    snprintf_P(buf, sizeof(buf), PSTR("PWM pin %d value %d"), pin, pwmVal);
-    addDmesgRam(buf);
-    Serial.print(F("PWM pin ")); Serial.print(pin);
-    Serial.print(F(" set to ")); Serial.println(pwmVal);
+    if (sp != -1) {
+      freq = atoi_safe(args + sp + 1);
+      sp = indexOf(args + sp, " ");
+      pin = atoi_safe(args + sp);
+      generate_tone(pin, freq);
+    }
+
+    else {
+      Serial.println(F("Usage: tone [pin] [freq]"));
+    }
+
   }
-  else if (strcmp_P(cmd, PSTR("help")) == 0) {
+
+  else if (strcmp_P(cmd, PSTR("reset-fs")) == 0) {
+#if NO_EEPROM == 0
+    Serial.println(F("Clearing the filesystem! This may take several minutes."));
+    clear_eeprom();
+    Serial.println(F("Rebooting!"));
+    resetFunc();
+#else
+    Serial.println(F("Clearing the EEPROM data is disabled in this build."));
+#endif
+  }
+
+  else if (strcmp_P(cmd, PSTR("notone")) == 0) {
+    int pin;
+    if (!is_argstr_empty(args)) {
+      pin = atoi_safe(args);
+      stop_tone(pin);
+    }
+
+    else {
+      Serial.println(F("Usage: notone [pin]"));
+    }
+  } else if (strcmp_P(cmd, PSTR("help")) == 0) {
     Serial.println(F("Commands: ls, cd, pwd, mkdir, touch, cat, echo, rm, info"));
     Serial.println(F("          pinmode, write, read, gpio, pwm, sh"));
     Serial.println(F("          uptime, uname, dmesg, df, free, whoami, clear, reboot"));
     Serial.println(F("GPIO: gpio [pin] on/off/toggle  |  gpio vixa [count]"));
     Serial.println(F("SH:   sh [file]  -- run script (use ; as line separator)"));
+    Serial.println(F("SYNC: sync       -- save filesystem to EEPROM"));
   }
+
+  else if (strcmp_P(cmd, PSTR("sleep")) == 0) {
+    int time;
+    if (!is_argstr_empty(args)) {
+      time = atoi_safe(args);
+      delay(time * 1000);
+    }
+
+    else {
+      Serial.println(F("Usage: sleep [time]"));
+    }
+
+  }
+
+  else if (strcmp_P(cmd, PSTR("sync")) == 0) {
+    saveFS();
+  }
+
+  else if (strcmp_P(cmd, PSTR("build-info")) == 0) {
+    Serial.println(String("NO_MEMORY_CHECK: ") + NO_MEMORY_CHECK);
+    Serial.println(String("NO_SOFT_RESET: ") + NO_SOFT_RESET);
+    Serial.println(String("NO_TONE_FUNC: ") + NO_TONE_FUNC);
+    Serial.println(String("NO_EEPROM: ") + NO_EEPROM);
+    Serial.println(String("HW_NAME: ") + HW_NAME);
+    Serial.println(String("HW_ARCH: ") + HW_ARCH);
+  }
+
   else {
     Serial.println(F("Unknown command."));
   }
@@ -549,7 +734,9 @@ void runScript(const char* content) {
       if (li > 0) {
         line[li] = '\0';
         lineNum++;
-        Serial.print(F("[sh:")); Serial.print(lineNum); Serial.print(F("] "));
+        Serial.print(F("[sh:"));
+        Serial.print(lineNum);
+        Serial.print(F("] "));
         Serial.println(line);
         executeCommand(line);
         li = 0;
