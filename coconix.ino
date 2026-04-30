@@ -1,13 +1,26 @@
 #include <Arduino.h>
 #include <string.h>
 #include <avr/pgmspace.h>
-#include <EEPROM.h>
 
-// Change these to reflect your hardware configuration!
-#define NO_MEMORY_CHECK 0 // Disable checking the amount of free memory available.
-#define NO_SOFT_RESET 0 // Disable software resets.
-#define NO_TONE_FUNC 0 // Disable piezo support.
-#define HW_NAME "Arduino UNO" // The name of the board running Coconix.
+
+// Change these to reflect your hardware configuration! If the given feature was enabled here but isn't supported for the hardware configuration in use, it will be disabled at build-time.
+#define NO_MEMORY_CHECK 0      // Disable checking the amount of free memory available.
+#define NO_SOFT_RESET 0        // Disable software resets.
+#define NO_TONE_FUNC 0         // Disable piezo support.
+#define NO_EEPROM 0            // Disable all access and usage of the EEPROM storage.
+#define HW_NAME "Arduino UNO"  // The name of the board running Coconix.
+
+#if not defined(ADAFRUIT_METRO_M0_EXPRESS) && not defined(ARDUINO_SAM_DUE) && NO_EEPROM == 0  // EEPROM is allowed and not using Adafruit Metro M0 Express board.
+#include <EEPROM.h>
+#elif defined(ADAFRUIT_METRO_M0_EXPRESS) || defined(ARDUINO_SAM_DUE)
+#undef NO_EEPROM
+#define NO_EEPROM 1  // EEPROM cannot be used on some boards.
+#endif
+
+#ifdef ARDUINO_SAM_DUE
+#undef NO_TONE_FUNC
+#define NO_TONE_FUNC 1  // *sigh* Arduino Due boards are the worst.
+#endif
 
 #define MAX_FILES 10
 #define NAME_LEN 12
@@ -16,7 +29,7 @@
 #define DMESG_LINES 6
 #define DMESG_LEN 40
 #define EEPROM_MAGIC 0xAB
-#define EEPROM_ADDR  0
+#define EEPROM_ADDR 0
 
 #ifdef __arm__
 // should use uinstd.h to define sbrk but Due causes a conflict
@@ -71,7 +84,7 @@ int freeMemory() {
 }
 
 bool is_argstr_empty(char* args) {
-  return strcmp("", args)==0;
+  return strcmp("", args) == 0;
 }
 
 #if defined(__AVR__) && NO_SOFT_RESET == 0
@@ -112,7 +125,10 @@ void addDmesgRam(const char* msg) {
 }
 
 void saveFS() {
-  EEPROM.write(EEPROM_ADDR, EEPROM_MAGIC);
+#if NO_EEPROM == 1
+  Serial.println(F("Filesystem could not be synced because EEPROM writes are disabled."));
+#else
+  EEPROM.update(EEPROM_ADDR, EEPROM_MAGIC);
   int addr = EEPROM_ADDR + 1;
   for (int i = 0; i < MAX_FILES; i++) {
     EEPROM.put(addr, fs[i]);
@@ -120,8 +136,10 @@ void saveFS() {
   }
   Serial.println(F("Synced to EEPROM."));
   addDmesg(F("FS saved to EEPROM"));
+#endif
 }
 
+#if NO_EEPROM == 0
 void loadFS() {
   if (EEPROM.read(EEPROM_ADDR) != EEPROM_MAGIC) return;
   int addr = EEPROM_ADDR + 1;
@@ -131,16 +149,19 @@ void loadFS() {
   }
   addDmesg(F("FS loaded from EEPROM"));
 }
+#endif
 
 void initFS() {
+#if NO_EEPROM == 0
   // If saved filesystem exists, load it instead of defaults
   if (EEPROM.read(EEPROM_ADDR) == EEPROM_MAGIC) {
     loadFS();
     return;
   }
+#endif
 
   int d, i;
-  const char* dirs[] = {"home", "dev"};
+  const char* dirs[] = { "home", "dev" };
   for (d = 0; d < 2; d++) {
     for (i = 0; i < MAX_FILES; i++) {
       if (!fs[i].active) {
@@ -206,6 +227,17 @@ void stop_tone(int pin) {
   noTone(pin);
 #elif NO_TONE_FUNC == 1
   Serial.println(F("This build of Coconix has been configured to disable piezo support."));
+#endif
+}
+
+void clear_eeprom() {
+#if NO_EEPROM == 0
+  for (int i = 0; i < EEPROM.length(); i++) {
+    Serial.println(String("Clearing byte #") + String(i));
+    EEPROM.update(i, 255);
+  }
+#else
+  Serial.println(F("Filesystem could not be cleared because EEPROM writes are disabled."));
 #endif
 }
 
@@ -477,7 +509,6 @@ void executeCommand(char* line) {
           strncpy(fs[j].content, text, CONTENT_LEN - 1);
           fs[j].content[CONTENT_LEN - 1] = '\0';
           Serial.println(F("Saved."));
-          saveFS();
           if (strcmp_P(fs[j].parentDir, PSTR("/dev/")) == 0 && strncmp_P(fs[j].name, PSTR("pin"), 3) == 0) {
             int devPin = atoi_safe(fs[j].name + 3);
             if (devPin > 0) {
@@ -537,7 +568,6 @@ void executeCommand(char* line) {
         }
         fs[j].active = 0;
         Serial.println(F("Removed."));
-        saveFS();
         found = 1;
         break;
       }
@@ -585,6 +615,7 @@ void executeCommand(char* line) {
   } else if (strcmp_P(cmd, PSTR("reboot")) == 0) {
     Serial.println(F("Rebooting..."));
     addDmesg(F("System reboot"));
+    saveFS();
     delay(500);
     resetFunc();
   } else if (strcmp_P(cmd, PSTR("clear")) == 0) {
@@ -609,7 +640,8 @@ void executeCommand(char* line) {
     Serial.println(F("Commands: ls, cd, pwd, mkdir, touch, cat, echo, rm, info"));
     Serial.println(F("          pinmode, write, read, gpio, sh"));
     Serial.println(F("          uptime, uname, dmesg, df, free, whoami, clear, reboot, tone, notone, sleep"));
-    Serial.println(F("GPIO: gpio [pin] on/off/toggle  |  gpio vixa [count] | tone [pin] [freq]"));
+    Serial.println(F("          sync, build-info"));
+    Serial.println(F("GPIO: gpio [pin] on/off/toggle  |  gpio vixa [count] | tone [pin] [freq] | notone [pin]"));
     Serial.println(F("SH:   sh [file]  -- run script (use ; as line separator)"));
 
   } else if (strcmp_P(cmd, PSTR("tone")) == 0) {
@@ -628,19 +660,28 @@ void executeCommand(char* line) {
 
   }
 
+  else if (strcmp_P(cmd, PSTR("reset-fs")) == 0) {
+#if NO_EEPROM == 0
+    Serial.println(F("Clearing the filesystem! This may take several minutes."));
+    clear_eeprom();
+    Serial.println(F("Rebooting!"));
+    resetFunc();
+#else
+    Serial.println(F("Clearing the EEPROM data is disabled in this build."));
+#endif
+  }
+
   else if (strcmp_P(cmd, PSTR("notone")) == 0) {
     int pin;
-    sp = indexOf(args, " ");
     if (!is_argstr_empty(args)) {
-      pin = atoi_safe(args + sp);
+      pin = atoi_safe(args);
       stop_tone(pin);
     }
 
     else {
       Serial.println(F("Usage: notone [pin]"));
     }
-  }
-  else if (strcmp_P(cmd, PSTR("help")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("help")) == 0) {
     Serial.println(F("Commands: ls, cd, pwd, mkdir, touch, cat, echo, rm, info"));
     Serial.println(F("          pinmode, write, read, gpio, pwm, sh"));
     Serial.println(F("          uptime, uname, dmesg, df, free, whoami, clear, reboot"));
@@ -660,6 +701,19 @@ void executeCommand(char* line) {
       Serial.println(F("Usage: sleep [time]"));
     }
 
+  }
+
+  else if (strcmp_P(cmd, PSTR("sync")) == 0) {
+    saveFS();
+  }
+
+  else if (strcmp_P(cmd, PSTR("build-info")) == 0) {
+    Serial.println(String("NO_MEMORY_CHECK: ") + NO_MEMORY_CHECK);
+    Serial.println(String("NO_SOFT_RESET: ") + NO_SOFT_RESET);
+    Serial.println(String("NO_TONE_FUNC: ") + NO_TONE_FUNC);
+    Serial.println(String("NO_EEPROM: ") + NO_EEPROM);
+    Serial.println(String("HW_NAME: ") + HW_NAME);
+    Serial.println(String("HW_ARCH: ") + HW_ARCH);
   }
 
   else {
