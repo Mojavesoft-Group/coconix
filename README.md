@@ -38,7 +38,6 @@ Coconix is a Unix-like shell for Arduino Uno boards.
 - [ ] alias cmd
 - [ ] 'slots' cmd
 
-# LICENSE
 ## License
 Coconix uses the BSD 3-clause license and contains large portions of code originating from [KernelUNO](https://github.com/Arc1011/KernelUNO).
 
